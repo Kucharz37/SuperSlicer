@@ -1009,7 +1009,7 @@ bool UnsavedChangesDialog::save(PresetCollection* dependent_presets, bool show_s
         PrinterTechnology printer_technology = wxGetApp().preset_bundle->printers.get_edited_preset().printer_technology();
 
         for (Tab* tab : wxGetApp().tabs_list)
-            if (tab->supports_printer_technology(printer_technology) && tab->current_preset_is_dirty()) {
+            if (tab->supports_printer_technology(printer_technology) && tab->completed() && tab->current_preset_is_dirty()) {
                 const Preset& preset = tab->get_presets()->get_edited_preset();
                 if (preset.is_system || preset.is_default || preset.is_external)
                     types_for_save.emplace_back(preset.type);
@@ -1039,7 +1039,7 @@ wxString get_string_from_enum(const std::string& opt_key, const DynamicPrintConf
 {
     const ConfigOptionDef& def = config.def()->options.at(opt_key);
     const std::vector<std::string>& names = def.enum_labels.empty() ? def.enum_values : def.enum_labels;
-    int val = config.option(opt_key)->getInt();
+    int val = config.option(opt_key)->get_int();
 
     // if it doesn't use all list declared in PrintConfig.hpp.
     // So we should "convert" val to the correct one
@@ -1060,7 +1060,7 @@ static size_t get_id_from_opt_key(std::string opt_key)
         boost::erase_head(opt_key, pos + 1);
         return static_cast<size_t>(atoi(opt_key.c_str()));
     }
-    return 0;
+    return size_t(-1);
 }
 
 static wxString get_full_label(std::string opt_key, const DynamicPrintConfig& config)
@@ -1095,11 +1095,15 @@ static wxString get_string_value(std::string opt_key, const DynamicPrintConfig& 
             auto values = config.opt<ConfigOptionIntsNullable>(opt_key);
             if (opt_idx < values->size())
                 return from_u8((boost::format("%1%") % values->get_at(opt_idx)).str());
+            else
+                return from_u8(values->serialize());
         }
         else {
             auto values = config.opt<ConfigOptionInts>(opt_key);
             if (opt_idx < values->size())
                 return from_u8((boost::format("%1%") % values->get_at(opt_idx)).str());
+            else
+                return from_u8(values->serialize());
         }
         return _L("Undef");
     }
@@ -1110,26 +1114,34 @@ static wxString get_string_value(std::string opt_key, const DynamicPrintConfig& 
             auto values = config.opt<ConfigOptionBoolsNullable>(opt_key);
             if (opt_idx < values->size())
                 return values->get_at(opt_idx) ? "true" : "false";
+            else
+                return from_u8(values->serialize());
         }
         else {
             auto values = config.opt<ConfigOptionBools>(opt_key);
             if (opt_idx < values->size())
                 return values->get_at(opt_idx) ? "true" : "false";
+            else
+                return from_u8(values->serialize());
         }
         return _L("Undef");
     }
     case coPercent:
-        return from_u8((boost::format("%1%%%") % int(config.optptr(opt_key)->getFloat())).str());
+        return from_u8((boost::format("%1%%%") % int(config.optptr(opt_key)->get_float())).str());
     case coPercents: {
         if (is_nullable) {
             auto values = config.opt<ConfigOptionPercentsNullable>(opt_key);
             if (opt_idx < values->size())
                 return from_u8((boost::format("%1%%%") % values->get_at(opt_idx)).str());
+            else
+                return from_u8(values->serialize());
         }
         else {
             auto values = config.opt<ConfigOptionPercents>(opt_key);
             if (opt_idx < values->size())
                 return from_u8((boost::format("%1%%%") % values->get_at(opt_idx)).str());
+            else
+                return from_u8(values->serialize());
         }
         return _L("Undef");
     }
@@ -1140,11 +1152,15 @@ static wxString get_string_value(std::string opt_key, const DynamicPrintConfig& 
             auto values = config.opt<ConfigOptionFloatsNullable>(opt_key);
             if (opt_idx < values->size())
                 return double_to_string(values->get_at(opt_idx), opt->precision);
+            else
+                return from_u8(values->serialize());
         }
         else {
             auto values = config.opt<ConfigOptionFloats>(opt_key);
             if (opt_idx < values->size())
                 return double_to_string(values->get_at(opt_idx), opt->precision);
+            else
+                return from_u8(values->serialize());
         }
         return _L("Undef");
     }
@@ -1176,8 +1192,11 @@ static wxString get_string_value(std::string opt_key, const DynamicPrintConfig& 
                                 from_u8(strings->get_at(id + 3)) + ";\n";
                 return out;
             }
-            if (!strings->empty() && opt_idx < strings->values.size())
-                return from_u8(strings->get_at(opt_idx));
+            if (!strings->empty())
+                if (opt_idx < strings->values.size())
+                    return from_u8(strings->get_at(opt_idx));
+                else
+                    return from_u8(strings->serialize());
         }
         break;
         }
@@ -1190,8 +1209,10 @@ static wxString get_string_value(std::string opt_key, const DynamicPrintConfig& 
     case coFloatsOrPercents: {
         const ConfigOptionFloatsOrPercents* floats_percents = config.opt<ConfigOptionFloatsOrPercents>(opt_key);
         if (floats_percents)
-            out = double_to_string(floats_percents->get_at(opt_idx).value, opt->precision) + (floats_percents->get_at(opt_idx).percent ? "%" : "");
-        return out;
+            if(opt_idx < floats_percents->values.size())
+                return double_to_string(floats_percents->get_at(opt_idx).value, opt->precision) + (floats_percents->get_at(opt_idx).percent ? "%" : "");
+            else
+                return from_u8(floats_percents->serialize());
     }
     case coEnum: {
         return get_string_from_enum(opt_key, config);
@@ -1206,9 +1227,13 @@ static wxString get_string_value(std::string opt_key, const DynamicPrintConfig& 
             BedShape shape(*config.option<ConfigOptionPoints>(opt_key));
             return shape.get_full_name_with_params();
         }
-
-        Vec2d val = config.opt<ConfigOptionPoints>(opt_key)->get_at(opt_idx);
-        return from_u8((boost::format("[%1%]") % ConfigOptionPoint(val).serialize()).str());
+        
+        const ConfigOptionPoints* opt_pts = config.opt<ConfigOptionPoints>(opt_key);
+        if (!opt_pts->values.empty())
+            if (opt_idx < opt_pts->values.size())
+                return from_u8((boost::format("[%1%]") % ConfigOptionPoint(opt_pts->get_at(opt_idx)).serialize()).str());
+            else
+                return from_u8(opt_pts->serialize());
     }
     default:
         break;
@@ -1234,7 +1259,7 @@ void UnsavedChangesDialog::update(Preset::Type type, PresetCollection* dependent
         PrinterTechnology printer_technology = wxGetApp().preset_bundle->printers.get_edited_preset().printer_technology();
         int presets_cnt = 0;
         for (Tab* tab : wxGetApp().tabs_list)
-            if (tab->supports_printer_technology(printer_technology) && tab->current_preset_is_dirty())
+            if (tab->supports_printer_technology(printer_technology) && tab->completed() && tab->current_preset_is_dirty())
                 presets_cnt++;
         m_action_line->SetLabel((header.IsEmpty() ? "" : header + "\n\n") + 
                                 _L_PLURAL("The following preset was modified",
@@ -1262,7 +1287,7 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
     // update searcher befofre update of tree
     wxGetApp().sidebar().check_and_update_searcher();
     Search::OptionsSearcher& searcher = wxGetApp().sidebar().get_searcher();
-    searcher.sort_options_by_key();
+    assert(searcher.is_sorted());
 
     // list of the presets with unsaved changes
     std::vector<PresetCollection*> presets_list;
@@ -1271,7 +1296,7 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
         PrinterTechnology printer_technology = wxGetApp().preset_bundle->printers.get_edited_preset().printer_technology();
 
         for (Tab* tab : wxGetApp().tabs_list)
-            if (tab->supports_printer_technology(printer_technology) && tab->current_preset_is_dirty())
+            if (tab->supports_printer_technology(printer_technology) && tab->completed() && tab->current_preset_is_dirty())
                 presets_list.emplace_back(tab->get_presets());
     }
     else
@@ -1313,6 +1338,7 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
                 // When founded option isn't the correct one.
                 // It can be for dirty_options: "default_print_profile", "printer_model", "printer_settings_id",
                 // because of they don't exist in searcher
+                assert((std::set<std::string>{"default_print_profile", "printer_model", "printer_settings_id", "filament_settings_id", "print_settings_id", "inherits"}).count(opt_key) > 0);
                 continue;
             }
 
@@ -1320,9 +1346,6 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
                 get_string_value(opt_key, old_config), get_string_value(opt_key, new_config), category_icon_map.find(option.category) != category_icon_map.end() ? category_icon_map.at(option.category) : "wrench");
         }
     }
-
-    // Revert sort of searcher back
-    searcher.sort_options_by_label();
 }
 
 void UnsavedChangesDialog::on_dpi_changed(const wxRect& suggested_rect)
@@ -1437,7 +1460,7 @@ FullCompareDialog::FullCompareDialog(const wxString& option_name, const wxString
 
 static PresetCollection* get_preset_collection(Preset::Type type, PresetBundle* preset_bundle = nullptr) {
     if (!preset_bundle)
-        preset_bundle = wxGetApp().preset_bundle;
+        preset_bundle = wxGetApp().preset_bundle.get();
     return  type == Preset::Type::TYPE_FFF_PRINT        ? &preset_bundle->fff_prints :
             type == Preset::Type::TYPE_SLA_PRINT        ? &preset_bundle->sla_prints :
             type == Preset::Type::TYPE_FFF_FILAMENT     ? &preset_bundle->filaments :
@@ -1631,7 +1654,7 @@ void DiffPresetDialog::update_tree()
     // update searcher befofre update of tree
     wxGetApp().sidebar().check_and_update_searcher(); 
     Search::OptionsSearcher& searcher = wxGetApp().sidebar().get_searcher();
-    searcher.sort_options_by_key();
+    assert(searcher.is_sorted());
 
     m_tree->Clear();
     wxString bottom_info = "";
@@ -1733,8 +1756,6 @@ void DiffPresetDialog::update_tree()
         Refresh();
     }
 
-    // Revert sort of searcher back
-    searcher.sort_options_by_label();
 }
 
 void DiffPresetDialog::on_dpi_changed(const wxRect&)

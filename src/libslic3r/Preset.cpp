@@ -449,7 +449,10 @@ void Preset::set_visible_from_appconfig(const AppConfig &app_config)
 
 static std::vector<std::string> s_Preset_print_options {
         "layer_height", 
-        "first_layer_height", "perimeters", "spiral_vase",
+        "first_layer_height",
+        "perimeters",
+        "perimeters_hole",
+        "spiral_vase",
         "slice_closing_radius",
         "slicing_mode",
         "top_solid_layers",
@@ -468,13 +471,18 @@ static std::vector<std::string> s_Preset_print_options {
         "allow_empty_layers",
         "avoid_crossing_perimeters", 
         "avoid_crossing_not_first_layer",
+        "avoid_crossing_top",
         "thin_perimeters", "thin_perimeters_all",
         "overhangs_speed",
         "overhangs_speed_enforce",
+        "overhangs_max_slope",
+        "overhangs_bridge_threshold",
+        "overhangs_bridge_upper_layers",
         "overhangs_width",
         "overhangs_width_speed", 
         "overhangs_reverse",
         "overhangs_reverse_threshold",
+        "perimeter_reverse",
         "seam_position",
         "seam_angle_cost",
         "seam_notch_all",
@@ -506,10 +514,15 @@ static std::vector<std::string> s_Preset_print_options {
         "ironing_speed",
         "ironing_spacing",
         "ironing_angle",
+        "fill_aligned_z",
         "fill_angle",
+        "fill_angle_cross",
         "fill_angle_increment",
+        "fill_angle_template",
         "bridge_angle",
         "solid_infill_below_area",
+        "solid_infill_below_layer_area",
+        "solid_infill_below_width",
         "only_retract_when_crossing_perimeters", "enforce_retract_first_layer",
         "infill_first",
         "avoid_crossing_perimeters_max_detour",
@@ -654,6 +667,7 @@ static std::vector<std::string> s_Preset_print_options {
         "bridge_flow_ratio",
         "bridge_type",
         "solid_infill_overlap",
+        "top_solid_infill_overlap",
         "infill_anchor",
         "infill_anchor_max",
         "clip_multipart_objects",
@@ -683,7 +697,7 @@ static std::vector<std::string> s_Preset_print_options {
         "compatible_printers", "compatible_printers_condition", "inherits", 
         "infill_dense", "infill_dense_algo",
         "no_perimeter_unsupported_algo",
-        "exact_last_layer_height",
+        // "exact_last_layer_height",
         "perimeter_loop",
         "perimeter_loop_seam",
         "infill_connection", "infill_connection_solid", "infill_connection_top", "infill_connection_bottom", "infill_connection_bridge",
@@ -698,12 +712,14 @@ static std::vector<std::string> s_Preset_print_options {
         "model_precision",
         "resolution",
         "resolution_internal",
+        "bridge_precision",
         "gcode_resolution", //TODO what to do with it?
         "curve_smoothing_precision",
         "curve_smoothing_cutoff_dist",
         "curve_smoothing_angle_convex",
         "curve_smoothing_angle_concave",
         "print_extrusion_multiplier",
+        "print_first_layer_temperature",
         "print_retract_length",
         "print_temperature",
         "print_retract_lift",
@@ -745,10 +761,11 @@ static std::vector<std::string> s_Preset_filament_options {
         "filament_dip_insertion_speed",
         "filament_dip_extraction_speed",  //skinnydip params end
         "temperature", "first_layer_temperature", "bed_temperature", "first_layer_bed_temperature", 
-        // cooling
-        "fan_always_on", 
-        "min_fan_speed",
-        "max_fan_speed", 
+        // "cooling",
+        // "fan_always_on", (now default_fan_speed)
+        // "min_fan_speed", (now fan_printer_min_speed)
+        "default_fan_speed",
+        "max_fan_speed",
         "bridge_fan_speed",
         "bridge_internal_fan_speed",
         "external_perimeter_fan_speed",
@@ -805,6 +822,8 @@ static std::vector<std::string> s_Preset_printer_options {
     "fan_speedup_overhangs",
     "fan_speedup_time",
     "fan_percentage",
+    "fan_printer_min_speed",
+    "gcode_ascii",
     "gcode_filename_illegal_char",
     "gcode_flavor",
     "gcode_precision_xyz",
@@ -845,6 +864,7 @@ static std::vector<std::string> s_Preset_printer_options {
     "thumbnails_custom_color",
     "thumbnails_end_file",
     "thumbnails_format",
+    "thumbnails_tag_format",
     "thumbnails_with_bed",
     "wipe_advanced",
     "wipe_advanced_nozzle_melted_volume",
@@ -956,6 +976,7 @@ static std::vector<std::string> s_Preset_sla_printer_options {
     "thumbnails_color",
     "thumbnails_custom_color",
     "thumbnails_with_bed",
+    "thumbnails_tag_format",
     "thumbnails_with_support",
 };
 
@@ -1060,7 +1081,7 @@ void PresetCollection::load_presets(
                     preset.config.apply(std::move(config));
                     Preset::normalize(preset.config);
                     // Report configuration fields, which are misplaced into a wrong group.
-                    std::string incorrect_keys = Preset::remove_invalid_keys(config, default_preset.config);
+                    std::string incorrect_keys = Preset::remove_invalid_keys(preset.config, default_preset.config);
                     if (! incorrect_keys.empty())
                         BOOST_LOG_TRIVIAL(error) << "Error in a preset file: The preset \"" <<
                             preset.file << "\" contains the following incorrect keys: " << incorrect_keys << ", which were removed";
@@ -1533,7 +1554,9 @@ inline t_config_option_keys deep_diff(const ConfigBase &config_this, const Confi
             && (ignore_phony || !(this_opt->is_phony() && other_opt->is_phony()))
             && ((*this_opt != *other_opt) || (this_opt->is_phony() != other_opt->is_phony())))
         {
-            if (opt_key == "bed_shape" || opt_key == "compatible_prints" || opt_key == "compatible_printers" || opt_key == "filament_ramming_parameters" || opt_key == "gcode_substitutions") {
+            //if (opt_key == "bed_shape" || opt_key == "compatible_prints" || opt_key == "compatible_printers" ||
+            //    opt_key == "filament_ramming_parameters" || opt_key == "gcode_substitutions") {
+            if (this_opt->is_vector() && !(static_cast<const ConfigOptionVectorBase *>(this_opt)->is_extruder_size())) {
                 // Scalar variable, or a vector variable, which is independent from number of extruders,
                 // thus the vector is presented to the user as a single input.
                 // Merill: these are 'button' special settings.
@@ -1732,8 +1755,28 @@ std::string Preset::type_name(Type t) {
     case Preset::TYPE_SLA_PRINT:    return "sla_print";
     case Preset::TYPE_SLA_MATERIAL: return "sla_material";
     case Preset::TYPE_PRINTER:      return "printer";
+    case Preset::TYPE_FREQUENT_FFF: return "freq_fff";
+    case Preset::TYPE_FREQUENT_SLA: return "freq_sla";
     default:                        return "invalid";
     }
+}
+
+Preset::Type Preset::type_from_name(std::string name) { 
+    if ("print" == name)
+        return Preset::TYPE_FFF_PRINT;
+    if ("filament" == name)
+        return Preset::TYPE_FFF_FILAMENT;
+    if ("sla_print" == name)
+        return Preset::TYPE_SLA_PRINT;
+    if ("sla_material" == name)
+        return Preset::TYPE_SLA_MATERIAL;
+    if ("printer" == name)
+        return Preset::TYPE_PRINTER;
+    if ("freq_fff" == name)
+        return Preset::TYPE_FREQUENT_FFF;
+    if ("freq_sla" == name)
+        return Preset::TYPE_FREQUENT_SLA;
+    return Preset::TYPE_INVALID;
 }
 
 std::string PresetCollection::section_name() const
